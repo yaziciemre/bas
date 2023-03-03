@@ -1,123 +1,145 @@
+import sys
 
 import numpy as np
-import pickle
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
-from keras.callbacks import ModelCheckpoint
+import pandas as pd
+import json
+from c import countries, codes
+from sklearn.decomposition import PCA
 
-# Algorithm parameters
-dataset_filename = 'mouse_data.txt'
-weights_save_name = "weights_lstm_mouse.hdf5"
-CONTINUE_TRAINING_WHERE_YOU_LEFT_OFF=True
-timesteps = 16
-n_predictions = 128
-MAX_X,MAX_Y = 1024,1024
+#: Load the dataset
+file = "HotelCustomersDataset.csv"
+path = "C:/Users/bilge.adam/PycharmProjects/pythonProject/"
+df = pd.read_csv(path + file, sep=";")
+df = df.drop(columns=["NameHash", "ID"])
 
-# Global variables
-img = []
-dataset = []
-testing_dataset = []
-model = None
-model_generated = False
-state = 'idle'
+#: Country lookup
+df["Nationality"] = df["Nationality"].map( codes )
+continents = {a["name"]: a["continent"] for a in countries}
 
-# Save and Load dataset from file
-def save_dataset():
-    with open(dataset_filename, "wb") as fp:
-        pickle.dump(dataset, fp)
-#
-def load_dataset():
-    global dataset
-    with open(dataset_filename, "rb") as fp:
-        dataset = pickle.load(fp)
+#: Continent lookup
+df["Continent"] = df["Nationality"].map( continents )
 
-# Normalize and de-normalize
-def normalize(data_points,scale_down=True):
-    if(scale_down==True):
-        data_points[:] = [[float(data[0])/MAX_X, float(data[1])/MAX_Y] for data in data_points]
-    else:
-        data_points[:] = [[int(data[0]*MAX_X), int(data[1]*MAX_Y)] for data in data_points]
+#: Drop Nationality
+del df["Nationality"]
+df = df[ df["Continent"] != "AN" ]
 
-# Mouse callback function
-# The predictive model is in here, which is activated only when the corresponding state is enabled.
+vc = df[ "DocIDHash" ].value_counts()
+df["NofVisit"] = df[ "DocIDHash" ].map( vc )
 
-# Load weights from file if file exists
-def load_pretrained_weights():
-    global model
-    try:
-        model.load_weights(weights_save_name)
-    except:
-        print('Pre-trained weights do not exist. Please train model to obtain weights')
+#df.to_csv(path + "m6.csv", sep = ";", decimal = ",")
 
-# Graph the model. Edit the model here if desired
-def generate_model(load_weights=False):
-    global model
-    model = Sequential()
-    model.add(LSTM(64, return_sequences=False, input_shape=(2,timesteps)))
-    #model.add(LSTM(32, return_sequences=True))
-    #model.add(LSTM(32))
-    model.add(Dense(2, activation='relu'))
-    model.compile(loss='mse', optimizer='adam')
-    if(load_weights==True): load_pretrained_weights()
-    model_generated = True
+#: 0 - Remove non useful
+del df["DocIDHash"]
 
-# Generator for data
-def initialize_data_xy():
-    load_dataset()
-    normalize(dataset,scale_down=True)
-    xy_coord = [i for i in dataset]
-    n = len(xy_coord)-1
-    while(True):
-        i = np.random.randint(0,n)
-        try:
-            x_data = xy_coord[i:i+timesteps]
-            y_data = xy_coord[i+timesteps]
-            yield x_data, y_data
-        except:
-            pass
+#: 1 - Delete columns with very high sparsity
+for c in df.select_dtypes(exclude = ["object"]):
+	m = df[c].mean()
+	u = df[c].nunique()
+	if u == 2 and m < 0.001:
+		del df[c]
 
-# Function to fetch a dataset
-def get_data_to_train(how_many):
-    data = initialize_data_xy()
-    input_data = []
-    output_data = []
-    for i in range(how_many):
-        _temp = data.next()
-        input_data.append(_temp[0])
-        output_data.append(_temp[1])
-    input_data = np.array(input_data)
-    output_data = np.array(output_data)
-    input_data = np.reshape(input_data,(input_data.shape[0],2,input_data.shape[1]))
-    return input_data,output_data
+#: 2 - Outliers
+for c in df.select_dtypes(exclude = ["object"]):
+	u = df[c].nunique()
+	if u > 2:
+		lb = df[c].mean() - 3 * df[c].std()
+		ub = df[c].mean() + 3 * df[c].std()
+		df = df[ (df[c] < ub) & (df[c] > lb) ]
 
-# Training...
-def train(load_weights=False):
-    global model
-    x_train, y_train = get_data_to_train(6000)
-    if(model_generated==False):
-        generate_model(load_weights=load_weights)
-    elif(load_weights==True):
-        global model
-        model.load_weights(weights_save_name)
-    callbacks_list = [ModelCheckpoint(weights_save_name, monitor='loss', verbose=1, save_best_only=True, mode='auto', save_weights_only='True')]
-    model.fit(x_train, y_train, batch_size=6000, epochs=5000, verbose=2, callbacks=callbacks_list)
+#: 3 - Filling
 
-# Helper function
-def print_help():
-    print('''Predict mouse movements using Long Short Term Memory(LSTM) Network
-    Usage:
-    Press \'i\' for idle mode (mouse points are plotted in different colours)
-    Press \'r\' to start recording data, press \'r\' again to save dataset (mouse points are plotted red)
-    Press \'t\' to start training using the dataset (mouse are not plotted)
-    Press \'p\' to predict mouse movements (actual movements are plotted orange, predictions are plotted blue)
-    Press \'c\' to clear screen
-    Press \'h\' to show this help script
-    Press \'ESC\' to quit
-    Notes:
-    - Predictions are not real. The algorithm cannot figure out what you are going to do next. It is just a
-      demo to show how LSTM predictions can be used
-    - An example dataset file is already provided, along with trained model weights. So you can directly start
-      training and/or prediction.''')
+#: 4 - Check the correlations
+df.corr().to_csv("corr.csv", sep=";", decimal = ",")
+
+#: 5 - Delete if there is only one VALUE
+for c in df:
+	u = df[c].nunique()
+	if u == 1:
+		del df[c]
+
+#: 6 - Normalization
+for c in df.select_dtypes(exclude = ["object"]):
+	u = df[c].nunique()
+	if u > 2:
+		df[c] = (df[c] - df[c].mean()) / df[c].std()
+
+#: 7 - Categoric variables
+df = pd.get_dummies(df, columns = ["Continent"])
+df = pd.get_dummies(df, columns = ["DistributionChannel"])
+df = pd.get_dummies(df, columns = ["MarketSegment"])
+
+#: 8 - Dim red
+print(df.shape)
+from sklearn.manifold import TSNE
+
+df = df.sample(n= 5000)
+
+pca = PCA(n_components=20)
+pca.fit(df)
+
+# list(pca.explained_variance_ratio_)
+
+def euclidean( a, b, w ):
+	d = 0
+	for i in range(len(a)):
+		d += np.power(a[i] - b[i], 2) * w[i]
+	return np.sqrt(d)
 
 
-main()
+"""
+pca_tranformed = TSNE(n_components=2, learning_rate='auto',init='random', perplexity=3).fit_transform(df)
+
+import matplotlib.pyplot as plt
+
+plt.scatter( pca_tranformed[:,0], pca_tranformed[:,1])
+plt.show()
+
+df.to_csv("m6.csv", sep = ";", decimal = ",")
+"""
+
+
+"""
+changes = {}
+for v in value_counts:
+	da = df[ df["NameHash"] == v ]
+
+	for c in df:
+		unique = list(da[c].unique())
+		if len(unique) > 1:
+			if c not in changes:
+				changes[c] = 0
+			changes[c] += 1
+			#print("değişiyor", c, v, unique)
+
+
+print(changes)
+
+
+print(df["DocIDHash"].nunique(), len(df))
+value_counts = df["DocIDHash"].value_counts().to_dict()
+value_counts = {d[0]:d[1] for d in value_counts.items() if d[1] > 1}
+print(value_counts)
+
+
+
+changes = {}
+for v in vc:
+	da = df[ df["DocIDHash"] == v ]
+
+	for c in df:
+		unique = list(da[c].unique())
+		if len(unique) > 1:
+			if c not in changes:
+				changes[c] = 0
+			changes[c] += 1
+
+			if c == "Age":
+				print(unique)
+
+
+
+print(changes)
+
+"""
+
+
